@@ -35,6 +35,7 @@ USAGE_PAGE = "https://claude.ai/settings/usage"
 CLAUDE_CLI_VERSION = "2.1.226"
 
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+SETTINGS_PATH = Path.home() / ".claude.json"
 CONFIG_PATH = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
 ) / APP_ID / "config.toml"
@@ -162,6 +163,25 @@ def load_credentials() -> dict:
         "subscription": oauth.get("subscriptionType"),
         "tier": oauth.get("rateLimitTier"),
     }
+
+
+def account_fingerprint() -> str | None:
+    """Stable per-account id, so a cache from another login is never reused.
+
+    Tokens rotate on every refresh, so they cannot identify an account; the UUIDs
+    Claude Code keeps in ~/.claude.json can. Hashed to avoid copying identity data
+    into a second file. Returns None when the account cannot be determined.
+    """
+    try:
+        account = json.loads(SETTINGS_PATH.read_text()).get("oauthAccount") or {}
+    except (OSError, json.JSONDecodeError):
+        return None
+    parts = [account.get("accountUuid"), account.get("organizationUuid")]
+    if not any(parts):
+        return None
+    import hashlib
+
+    return hashlib.sha256("|".join(str(part) for part in parts).encode()).hexdigest()[:16]
 
 
 # ----------------------------------------------------------------------------- http
@@ -520,16 +540,24 @@ class Indicator:
         self.throttled_until = 0.0
 
         cache = load_cache()
-        self.notified: dict[str, list[int]] = cache.get("notified", {})
-        if isinstance(cache.get("state"), dict):
-            self.state = cache["state"]
-        # A restart must not clear an active 429 pause, so it is stored as wall clock.
-        pending = cache.get("throttle_until_wall")
-        if isinstance(pending, (int, float)):
-            remaining = pending - time.time()
-            if 0 < remaining <= self.config["max_backoff_seconds"]:
-                self.throttled_until = time.monotonic() + remaining
-                print(f"429 encore actif, pause de {int(remaining)} s", file=sys.stderr)
+        self.account = account_fingerprint()
+        self.notified: dict[str, list[int]] = {}
+        # Percentages and rate-limit pauses are per account: a cache written under a
+        # different login must not be shown, or we would display someone else's usage.
+        cached_account = cache.get("account")
+        if self.account is not None and cached_account is not None and cached_account != self.account:
+            print("cache d'un autre compte ignoré", file=sys.stderr)
+        else:
+            self.notified = cache.get("notified", {})
+            if isinstance(cache.get("state"), dict):
+                self.state = cache["state"]
+            # A restart must not clear an active 429 pause, so it is stored as wall clock.
+            pending = cache.get("throttle_until_wall")
+            if isinstance(pending, (int, float)):
+                remaining = pending - time.time()
+                if 0 < remaining <= self.config["max_backoff_seconds"]:
+                    self.throttled_until = time.monotonic() + remaining
+                    print(f"429 encore actif, pause de {int(remaining)} s", file=sys.stderr)
 
         self.indicator = self.AppIndicator.Indicator.new(
             APP_ID, ICONS["normal"], self.AppIndicator.IndicatorCategory.SYSTEM_SERVICES
@@ -554,11 +582,26 @@ class Indicator:
         remaining = self.throttled_until - time.monotonic()
         save_cache(
             {
+                "account": self.account,
                 "state": self.state,
                 "notified": self.notified,
                 "throttle_until_wall": time.time() + remaining if remaining > 0 else None,
             }
         )
+
+    def check_account_switch(self) -> None:
+        """Drop everything account-scoped when the user logs in as someone else."""
+        fingerprint = account_fingerprint()
+        if fingerprint is None or fingerprint == self.account:
+            return
+        print("changement de compte détecté, état local vidé", file=sys.stderr)
+        self.account = fingerprint
+        self.state = None
+        self.notified = {}
+        self.throttled_until = 0.0
+        self.failures = 0
+        self.error = None
+        self.refresh_ui()
 
     # -- scheduling
 
@@ -596,6 +639,7 @@ class Indicator:
     def start_fetch(self, *_args) -> bool:
         if self.fetching:
             return False
+        self.check_account_switch()
         now = time.monotonic()
         # Floor between any two requests, so a burst of menu clicks or a flurry of
         # credential-file writes cannot walk us into a 429.

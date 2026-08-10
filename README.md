@@ -78,6 +78,16 @@ la seconde.
 `max_backoff_seconds`. Le dernier état valide est mis en cache dans
 `~/.cache/ubuntu-claude-monitor/state.json` et réaffiché au démarrage.
 
+**Changement de compte.** Déconnexion/reconnexion sous un autre compte est prise
+en charge sans rien toucher : le token est relu, donc les pourcentages, le type
+d'abonnement et le palier de limites (`team (Max 5x)`, `Pro`…) suivent
+automatiquement, y compris l'apparition de nouvelles limites (Opus, Sonnet,
+Cowork). Le cache est scopé au compte via une empreinte des UUID stockés par
+Claude Code dans `~/.claude.json` — les tokens rotent à chaque refresh et ne
+peuvent donc pas servir d'identité. Un cache écrit sous un autre login est
+ignoré, et une bascule de compte en cours d'exécution vide l'état, les
+notifications déjà émises et la pause 429 (le rate limit est par compte).
+
 **Anti-429.** L'endpoint rate-limite assez vite. Trois garde-fous : plancher de
 60 s sur `interval_seconds`, délai minimum `min_fetch_interval` entre deux
 requêtes quelle qu'en soit l'origine (clics répétés sur « Rafraîchir », rafale

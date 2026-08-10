@@ -199,6 +199,37 @@ ind.start_fetch()
 settle(ind)
 check("burst click deferred", not ind.fetching and len(calls["timers"]) == before + 1)
 
+print("[2d] account switch")
+ind.account = "old-account-fp"
+ind.throttled_until = time.monotonic() + 300
+ind.notified = {"stale": [80]}
+ind.last_fetch = 0.0
+real_fp = m.account_fingerprint
+m.account_fingerprint = lambda: "new-account-fp"
+ind.start_fetch()
+settle(ind)
+check("account fingerprint adopted", ind.account == "new-account-fp", str(ind.account))
+check("other account's throttle dropped", ind.throttled_until == 0.0, str(ind.throttled_until))
+check("other account's notified dropped", ind.notified == {} or ind.state is not None, str(ind.notified))
+check("fetched after switch", ind.state is not None and ind.error is None, str(ind.error))
+check("cache scoped to account",
+      json.loads(m.CACHE_PATH.read_text()).get("account") == "new-account-fp",
+      str(json.loads(m.CACHE_PATH.read_text()).get("account")))
+
+m.CACHE_PATH.write_text(json.dumps({"account": "someone-else", "state": {"session_percent": 99.0,
+    "weekly_percent": 99.0, "limits": [], "max_severity": "normal", "subscription": "pro",
+    "tier": "x", "fetched_at": None}, "notified": {"k": [80]},
+    "throttle_until_wall": time.time() + 600}))
+stranger = m.Indicator(config, MODULES)
+check("stranger cache not shown", stranger.state is None or stranger.state.get("session_percent") != 99.0,
+      str(stranger.state))
+check("stranger throttle not inherited", stranger.throttled_until == 0.0, str(stranger.throttled_until))
+check("stranger notified not inherited", stranger.notified == {}, str(stranger.notified))
+settle(stranger)
+m.account_fingerprint = real_fp
+check("real fingerprint is 16 hex or None",
+      m.account_fingerprint() is None or len(m.account_fingerprint()) == 16, str(m.account_fingerprint()))
+
 print("[3] severity -> icon")
 calls["icons"].clear()
 ind.state["max_severity"] = "critical"
