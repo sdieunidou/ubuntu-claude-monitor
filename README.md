@@ -1,0 +1,126 @@
+# ubuntu-claude-monitor
+
+Indicateur permanent dans la barre système Ubuntu affichant tes limites d'usage
+Claude — les mêmes pourcentages que `claude /usage` et que la page
+[claude.ai/settings/usage](https://claude.ai/settings/usage).
+
+```
+┌─ barre du haut ────────────────────────────┐
+│  ... 🖥 5% · 37%                    16:59  │
+└────────────────────────────────────────────┘
+        │
+        ├ Claude · team (Max 5x)
+        ├ ────────────────────────────────
+        │    Session — 5%  ·  reset 20:20 (dans 3 h 20)
+        │ ▸  Hebdo · tous modèles — 37%  ·  reset 13/08 18:00 (dans 3 j 1 h)
+        │    Hebdo · Fable — 37%  ·  reset 13/08 18:00 (dans 3 j 1 h)
+        │    maj 16:59
+        ├ ────────────────────────────────
+        ├ Rafraîchir maintenant
+        ├ Ouvrir la page d'usage
+        └ Quitter
+```
+
+Autonome : stdlib Python uniquement (`urllib`, pas de `requests`), plus
+PyGObject pour l'icône. Ni `ccusage`, ni `claude-monitor`, ni parsing des logs
+locaux — la donnée vient directement de l'API.
+
+## Installation
+
+```bash
+./install.sh
+```
+
+Le script installe `gir1.2-ayatanaappindicator3-0.1` si besoin, vérifie l'accès
+API, puis enregistre un service utilisateur systemd démarré automatiquement avec
+la session graphique.
+
+Prérequis : Claude Code connecté (`claude` au moins une fois), GNOME avec
+l'extension `ubuntu-appindicators` activée (fournie par défaut sur Ubuntu).
+
+## Usage en ligne de commande
+
+```bash
+./claude_usage_monitor.py --once      # affichage texte avec barres, puis quitte
+./claude_usage_monitor.py --json      # état normalisé en JSON
+./claude_usage_monitor.py --raw       # réponse brute de l'API
+./claude_usage_monitor.py --watch 60  # rafraîchissement en terminal
+./claude_usage_monitor.py             # indicateur (mode par défaut)
+```
+
+## Configuration
+
+Optionnelle, dans `~/.config/ubuntu-claude-monitor/config.toml` :
+
+```toml
+interval_seconds = 120                  # période de poll, plancher forcé à 60 s
+min_fetch_interval = 20                 # délai mini entre deux requêtes (anti-429)
+thresholds = [80, 95]                   # seuils de notification (%)
+label_format = "{session}% · {weekly}%" # texte affiché dans la barre
+show_scoped = true                      # afficher les limites par modèle (Fable, Opus…)
+show_inactive = true                     # afficher les limites non actives
+notifications = true
+http_timeout = 15
+max_backoff_seconds = 900               # plafond du backoff sur erreur
+```
+
+## Fonctionnement
+
+**Source.** `GET https://api.anthropic.com/api/oauth/usage`, avec l'en-tête
+`anthropic-beta: oauth-2025-04-20` et le token OAuth local en `Bearer`. C'est
+l'endpoint interne que Claude Code utilise pour `/usage` : non documenté, il peut
+changer sans préavis. Le champ `limits[]` de la réponse est utilisé en priorité ;
+un repli sur les champs bruts (`five_hour`, `seven_day`, `seven_day_opus`…) prend
+le relais si cette clé disparaît.
+
+**Token.** Lu dans `~/.claude/.credentials.json`
+(`claudeAiOauth.accessToken`), relu à chaque poll. Le fichier est surveillé par
+inotify : quand Claude Code rafraîchit le token, l'indicateur le récupère dans
+la seconde.
+
+> **Le programme ne rafraîchit jamais le token et n'écrit jamais dans
+> `.credentials.json`.** Les refresh tokens rotent côté serveur : en consommer un
+> ici invaliderait la copie détenue par Claude Code et te déconnecterait de
+> Claude Code. Quand l'access token expire, l'indicateur passe en état dégradé
+> (icône hors-ligne + message « lance `claude` ») et attend le rafraîchissement
+> fait par Claude Code lui-même.
+
+**Robustesse.** Le fetch tourne dans un thread, l'UI est mise à jour via
+`GLib.idle_add`. Sur erreur HTTP/réseau, backoff exponentiel plafonné à
+`max_backoff_seconds`. Le dernier état valide est mis en cache dans
+`~/.cache/ubuntu-claude-monitor/state.json` et réaffiché au démarrage.
+
+**Anti-429.** L'endpoint rate-limite assez vite. Trois garde-fous : plancher de
+60 s sur `interval_seconds`, délai minimum `min_fetch_interval` entre deux
+requêtes quelle qu'en soit l'origine (clics répétés sur « Rafraîchir », rafale
+d'écritures sur le fichier de credentials), et respect de l'en-tête
+`Retry-After` renvoyé par le serveur — qui l'emporte sur le backoff calculé
+quand il demande une pause plus longue. Un 429 n'efface pas l'affichage : le
+dernier état valide reste visible avec la ligne d'avertissement en dessous.
+
+**Notifications.** `notify-send` au franchissement de chaque seuil, une seule
+fois par fenêtre de limite : la déduplication est indexée sur
+`kind:scope:resets_at`, donc le reset d'une fenêtre réarme la notification.
+
+## Tests
+
+```bash
+python3 tests/test_stubbed_indicator.py
+```
+
+Instancie l'indicateur avec des stubs GTK/AppIndicator : fetch réel, icônes par
+sévérité, déduplication des notifications, backoff, état dégradé sans
+credentials, token expiré, repli sur les champs bruts, formatage. Aucun serveur
+graphique requis, mais une session Claude Code valide oui.
+
+## Dépannage
+
+| Symptôme | Cause probable |
+|---|---|
+Pas d'icône dans la barre | extension appindicator désactivée → `gnome-extensions enable ubuntu-appindicators@ubuntu.com` |
+Icône hors-ligne, « token expiré » | lance `claude` une fois pour rafraîchir |
+`HTTP 401` | token révoqué → reconnecte-toi avec `claude` |
+`HTTP 429` | trop de polls, augmente `interval_seconds` |
+Icône présente, pas de texte | certains thèmes masquent les labels d'indicateur |
+
+Logs : `journalctl --user -u claude-usage-monitor -f`

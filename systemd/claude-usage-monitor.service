@@ -1,0 +1,16 @@
+[Unit]
+Description=Claude usage limits tray indicator
+Documentation=https://claude.ai/settings/usage
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=__EXEC__
+Restart=always
+RestartSec=5
+# The indicator only reads ~/.claude/.credentials.json; it never writes it.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target

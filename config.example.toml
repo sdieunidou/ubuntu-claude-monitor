@@ -1,0 +1,29 @@
+# Copier vers ~/.config/ubuntu-claude-monitor/config.toml puis :
+#   systemctl --user restart claude-usage-monitor
+
+# Période de poll de l'API, en secondes. Plancher forcé à 60 s (429 sinon).
+interval_seconds = 120
+
+# Délai minimum entre deux requêtes, quelle qu'en soit la cause (clic sur
+# « Rafraîchir », réécriture du fichier de credentials). Garde-fou anti-429.
+min_fetch_interval = 20
+
+# Seuils de notification, en % d'utilisation. Une notif par seuil et par fenêtre.
+thresholds = [80, 95]
+
+# Texte affiché dans la barre du haut. Champs: {session}, {weekly}
+label_format = "{session}% · {weekly}%"
+
+# Limites par modèle (Fable, Opus, Sonnet…) dans le menu déroulant.
+show_scoped = true
+
+# Limites marquées non actives par l'API.
+show_inactive = true
+
+notifications = true
+
+# Timeout HTTP en secondes.
+http_timeout = 15
+
+# Plafond du backoff exponentiel appliqué après une erreur.
+max_backoff_seconds = 900
