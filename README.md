@@ -4,22 +4,10 @@ Indicateur permanent dans la barre système Ubuntu affichant tes limites d'usage
 Claude — les mêmes pourcentages que `claude /usage` et que la page
 [claude.ai/settings/usage](https://claude.ai/settings/usage).
 
-```
-┌─ barre du haut ────────────────────────────┐
-│  ... 🖥 5% · 37%                    16:59  │
-└────────────────────────────────────────────┘
-        │
-        ├ Claude · team (Max 5x)
-        ├ ────────────────────────────────
-        │    Session — 5%  ·  reset 20:20 (dans 3 h 20)
-        │ ▸  Hebdo · tous modèles — 37%  ·  reset 13/08 18:00 (dans 3 j 1 h)
-        │    Hebdo · Fable — 37%  ·  reset 13/08 18:00 (dans 3 j 1 h)
-        │    maj 16:59
-        ├ ────────────────────────────────
-        ├ Rafraîchir maintenant
-        ├ Ouvrir la page d'usage
-        └ Quitter
-```
+![L'indicateur dans la barre du haut, menu déroulé sur le détail des limites](docs/screenshot.png)
+
+Le label `10% · 37%` reste visible en permanence dans la barre ; le menu donne le
+détail par limite avec l'heure de reset et le temps restant.
 
 Autonome : stdlib Python uniquement (`urllib`, pas de `requests`), plus
 PyGObject pour l'icône. Ni `ccusage`, ni `claude-monitor`, ni parsing des logs
@@ -95,8 +83,14 @@ la seconde.
 requêtes quelle qu'en soit l'origine (clics répétés sur « Rafraîchir », rafale
 d'écritures sur le fichier de credentials), et respect de l'en-tête
 `Retry-After` renvoyé par le serveur — qui l'emporte sur le backoff calculé
-quand il demande une pause plus longue. Un 429 n'efface pas l'affichage : le
-dernier état valide reste visible avec la ligne d'avertissement en dessous.
+quand il demande une pause plus longue. Une pause 429 est persistée en horloge
+murale dans le cache, donc un `systemctl restart` ou une reconnexion de session
+ne la réarme pas à zéro. Un 429 n'efface pas l'affichage : le dernier état
+valide reste visible avec la ligne d'avertissement en dessous.
+
+Chaque cycle écrit une ligne dans le journal (`usage: session X%, hebdo Y%` ou
+`fetch échoué (kind): … — nouvel essai dans N s`), donc l'état réel se lit avec
+`journalctl --user -u claude-usage-monitor -f`.
 
 **Notifications.** `notify-send` au franchissement de chaque seuil, une seule
 fois par fenêtre de limite : la déduplication est indexée sur

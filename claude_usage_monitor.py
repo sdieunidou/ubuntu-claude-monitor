@@ -523,6 +523,13 @@ class Indicator:
         self.notified: dict[str, list[int]] = cache.get("notified", {})
         if isinstance(cache.get("state"), dict):
             self.state = cache["state"]
+        # A restart must not clear an active 429 pause, so it is stored as wall clock.
+        pending = cache.get("throttle_until_wall")
+        if isinstance(pending, (int, float)):
+            remaining = pending - time.time()
+            if 0 < remaining <= self.config["max_backoff_seconds"]:
+                self.throttled_until = time.monotonic() + remaining
+                print(f"429 encore actif, pause de {int(remaining)} s", file=sys.stderr)
 
         self.indicator = self.AppIndicator.Indicator.new(
             APP_ID, ICONS["normal"], self.AppIndicator.IndicatorCategory.SYSTEM_SERVICES
@@ -540,6 +547,18 @@ class Indicator:
         self.watch_credentials()
         self.GLib.idle_add(self.start_fetch)
         self.schedule(self.config["interval_seconds"])
+
+    # -- persistence
+
+    def persist(self) -> None:
+        remaining = self.throttled_until - time.monotonic()
+        save_cache(
+            {
+                "state": self.state,
+                "notified": self.notified,
+                "throttle_until_wall": time.time() + remaining if remaining > 0 else None,
+            }
+        )
 
     # -- scheduling
 
@@ -613,7 +632,12 @@ class Indicator:
             self.error = None
             self.failures = 0
             self.check_thresholds(state)
-            save_cache({"state": state, "notified": self.notified})
+            self.persist()
+            print(
+                f"usage: session {format_percent(state['session_percent'])}%, "
+                f"hebdo {format_percent(state['weekly_percent'])}%",
+                file=sys.stderr,
+            )
             self.schedule(self.config["interval_seconds"])
         else:
             self.error = error
@@ -628,6 +652,11 @@ class Indicator:
                 backoff = max(backoff, retry_after)
             if error is not None and error.kind == "rate-limit":
                 self.throttled_until = time.monotonic() + backoff
+                self.persist()
+            print(
+                f"fetch échoué ({error.kind}): {error} — nouvel essai dans {int(backoff)} s",
+                file=sys.stderr,
+            )
             self.schedule(int(backoff))
         self.refresh_ui()
         return False
@@ -746,7 +775,7 @@ class Indicator:
             print(f"ouverture navigateur échouée: {exc}", file=sys.stderr)
 
     def on_quit_clicked(self, *_args) -> None:
-        save_cache({"state": self.state, "notified": self.notified})
+        self.persist()
         self.Gtk.main_quit()
 
 

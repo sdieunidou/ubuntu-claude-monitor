@@ -181,6 +181,13 @@ ind.last_fetch = 0.0
 ind.start_fetch()
 settle(ind)
 check("fetch blocked while throttled", not ind.fetching and len(calls["timers"]) == before + 1)
+check("throttle persisted to cache",
+      json.loads(m.CACHE_PATH.read_text()).get("throttle_until_wall", 0) > time.time() + 200,
+      str(json.loads(m.CACHE_PATH.read_text()).get("throttle_until_wall")))
+resumed = m.Indicator(config, MODULES)
+check("throttle survives restart", resumed.throttled_until > time.monotonic() + 200,
+      str(resumed.throttled_until - time.monotonic()))
+settle(resumed)
 check("rate-limit icon is stale", calls["icons"][-1] == m.ICONS["stale"], str(calls["icons"][-1]))
 ind.throttled_until = 0.0
 ind.error = None
