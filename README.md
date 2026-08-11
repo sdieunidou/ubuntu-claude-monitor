@@ -125,6 +125,6 @@ Pas d'icône dans la barre | extension appindicator désactivée → `gnome-exte
 Icône hors-ligne, « token expiré » | lance `claude` une fois pour rafraîchir |
 `HTTP 401` | token révoqué → reconnecte-toi avec `claude` |
 `HTTP 429` | trop de polls, augmente `interval_seconds` |
-Icône présente, pas de texte | certains thèmes masquent les labels d'indicateur |
+Icône présente, pas de texte | l'extension appindicator a redémarré ; l'indicateur renvoie le label ~2 s plus tard, sinon `systemctl --user restart claude-usage-monitor` |
 
 Logs : `journalctl --user -u claude-usage-monitor -f`

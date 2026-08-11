@@ -46,7 +46,7 @@ if not LIVE:
     m.fetch_usage = lambda token, timeout: json.loads(json.dumps(FIXTURE))
     m.load_credentials = lambda: dict(FIXTURE_CREDENTIALS)
 
-calls = {"icons": [], "labels": [], "notifications": [], "timers": []}
+calls = {"icons": [], "labels": [], "guides": [], "notifications": [], "timers": [], "watched": []}
 
 
 class Item:
@@ -67,7 +67,7 @@ class Menu:
 class Ind:
     def set_status(self, *a): pass
     def set_title(self, *a): pass
-    def set_label(self, l, g): calls["labels"].append(l)
+    def set_label(self, l, g): calls["labels"].append(l) or calls["guides"].append(g)
     def set_menu(self, menu): self.menu = menu
     def set_icon_full(self, icon, desc): calls["icons"].append(icon)
 
@@ -81,6 +81,9 @@ Gtk = types.SimpleNamespace(
 GLib = types.SimpleNamespace(
     idle_add=lambda fn, *a: fn(*a),
     timeout_add_seconds=lambda sec, fn, *a: calls["timers"].append(sec) or len(calls["timers"]),
+    # Sub-second timers are only used for the label re-push, which the tests drive
+    # by hand; firing them here would hide the two-step blank/restore sequence.
+    timeout_add=lambda ms, fn, *a: calls["timers"].append(ms / 1000) or len(calls["timers"]),
     source_remove=lambda i: None,
     PRIORITY_DEFAULT=0,
     unix_signal_add=lambda *a: None,
@@ -90,6 +93,11 @@ Gio = types.SimpleNamespace(
         monitor_file=lambda *a: types.SimpleNamespace(connect=lambda *b: None))),
     FileMonitorFlags=types.SimpleNamespace(NONE=0),
     AppInfo=types.SimpleNamespace(launch_default_for_uri=lambda *a: calls.setdefault("uri", a[0])),
+    BusType=types.SimpleNamespace(SESSION=2),
+    BusNameWatcherFlags=types.SimpleNamespace(NONE=0),
+    bus_watch_name=lambda bus, name, flags, appeared, vanished: (
+        calls["watched"].append(name) or len(calls["watched"])),
+    bus_unwatch_name=lambda i: calls.setdefault("unwatched", i),
 )
 
 
@@ -236,6 +244,23 @@ ind.state["max_severity"] = "critical"
 ind.refresh_ui()
 check("critical icon", calls["icons"][-1] == m.ICONS["critical"], str(calls["icons"]))
 
+print("[3b] label re-push when the panel restarts")
+check("tray host watched", m.SNI_WATCHER_NAME in calls["watched"], str(calls["watched"]))
+ind.state["max_severity"] = "normal"
+ind.error = None
+ind.refresh_ui()
+steady = calls["labels"][-1]
+calls["labels"].clear()
+ind.on_panel_appeared(None, m.SNI_WATCHER_NAME, ":1.1")
+check("re-push deferred, not immediate", not calls["labels"] and ind.repush_id is not None)
+ind.blank_label()
+# The panel drops a refresh whose value matches its cache, so "" must land first.
+check("blank label sent first", calls["labels"] == [""], str(calls["labels"]))
+ind.restore_label()
+check("real label sent after blank", calls["labels"] == ["", steady], str(calls["labels"]))
+check("guide keeps panel width", calls["guides"][-1] == m.LABEL_GUIDE, str(calls["guides"][-1]))
+check("re-push chain finished", ind.repush_id is None)
+
 print("[4] missing credentials -> degraded, no crash")
 m.load_credentials = REAL_LOAD
 saved = m.CREDENTIALS_PATH
@@ -289,6 +314,7 @@ check("header has no raw underscore",
 check("underline disabled on items",
       all(getattr(c, "underline", None) is False for c in ind.indicator.menu.children if c.label != "---"))
 check("quit saves cache", (ind.on_quit_clicked() is None) and calls.get("quit") is True)
+check("quit stops watching the tray host", calls.get("unwatched") is not None)
 check("open uri", (ind.on_open_clicked() is None) and calls.get("uri") == m.USAGE_PAGE)
 
 print()

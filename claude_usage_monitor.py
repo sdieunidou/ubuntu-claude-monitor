@@ -58,6 +58,12 @@ DEFAULTS = {
 # The endpoint rate-limits well before this, and the numbers move slowly.
 MIN_INTERVAL_SECONDS = 60
 
+# Widest label we ever draw; the panel reserves this much so digits stop jumping.
+LABEL_GUIDE = "100% · 100%"
+SNI_WATCHER_NAME = "org.kde.StatusNotifierWatcher"
+# Milliseconds the blanked label must stay visible for the panel to notice it.
+LABEL_REPUSH_GAP_MS = 400
+
 ICONS = {
     "normal": "utilities-system-monitor-symbolic",
     "warning": "dialog-warning-symbolic",
@@ -538,6 +544,8 @@ class Indicator:
         self.debounce_id: int | None = None
         self.last_fetch = 0.0
         self.throttled_until = 0.0
+        self.watcher_id: int | None = None
+        self.repush_id: int | None = None
 
         cache = load_cache()
         self.account = account_fingerprint()
@@ -564,7 +572,7 @@ class Indicator:
         )
         self.indicator.set_status(self.AppIndicator.IndicatorStatus.ACTIVE)
         self.indicator.set_title(APP_NAME)
-        self.indicator.set_label("…", "100% · 100%")
+        self.indicator.set_label("…", LABEL_GUIDE)
         self.menu = self.Gtk.Menu()
         self.indicator.set_menu(self.menu)
 
@@ -573,6 +581,7 @@ class Indicator:
 
         self.rebuild_menu()
         self.watch_credentials()
+        self.watch_panel()
         self.GLib.idle_add(self.start_fetch)
         self.schedule(self.config["interval_seconds"])
 
@@ -622,6 +631,45 @@ class Indicator:
             self.credentials_monitor.connect("changed", self.on_credentials_changed)
         except Exception as exc:  # noqa: BLE001 - watching is a bonus, not required
             print(f"surveillance credentials indisponible: {exc}", file=sys.stderr)
+
+    def watch_panel(self) -> None:
+        """Re-push the label whenever the panel's tray host comes back.
+
+        GNOME's appindicator extension only redraws the label when it receives
+        XAyatanaNewLabel, and libayatana only emits that when the text changes.
+        So when the extension (or the whole shell) restarts, libayatana quietly
+        re-registers the icon but never resends the label, and the panel shows a
+        bare icon until our percentages happen to move.
+        """
+        try:
+            self.watcher_id = self.Gio.bus_watch_name(
+                self.Gio.BusType.SESSION,
+                SNI_WATCHER_NAME,
+                self.Gio.BusNameWatcherFlags.NONE,
+                self.on_panel_appeared,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the label just stays stale, keep polling
+            print(f"surveillance du panneau indisponible: {exc}", file=sys.stderr)
+
+    def on_panel_appeared(self, _connection, _name, _owner) -> None:
+        # libayatana re-registers the item on its own; give it a moment first.
+        if self.repush_id is not None:
+            self.GLib.source_remove(self.repush_id)
+        self.repush_id = self.GLib.timeout_add_seconds(2, self.blank_label)
+
+    def blank_label(self) -> bool:
+        self.repush_id = None
+        # The extension drops a property refresh whose value equals its cache, so
+        # the real text only lands if an empty label goes out first.
+        self.indicator.set_label("", LABEL_GUIDE)
+        self.repush_id = self.GLib.timeout_add(LABEL_REPUSH_GAP_MS, self.restore_label)
+        return False
+
+    def restore_label(self) -> bool:
+        self.repush_id = None
+        self.indicator.set_label(self.label_text(), LABEL_GUIDE)
+        return False
 
     def on_credentials_changed(self, *_args) -> None:
         # Claude Code rewrites the file on refresh; debounce the write burst.
@@ -742,21 +790,25 @@ class Indicator:
 
     # -- UI
 
+    def label_text(self) -> str:
+        state = self.state
+        if state is None:
+            return "Claude ?"
+        return self.config["label_format"].format(
+            session=format_percent(state["session_percent"]),
+            weekly=format_percent(state["weekly_percent"]),
+        )
+
     def refresh_ui(self) -> None:
         state = self.state
         if state is None:
             self.indicator.set_icon_full(ICONS["stale"], APP_NAME)
-            self.indicator.set_label("Claude ?", "Claude ?")
         else:
-            label = self.config["label_format"].format(
-                session=format_percent(state["session_percent"]),
-                weekly=format_percent(state["weekly_percent"]),
-            )
             icon = ICONS["stale"] if self.error else ICONS.get(
                 state["max_severity"], ICONS["warning"]
             )
             self.indicator.set_icon_full(icon, APP_NAME)
-            self.indicator.set_label(label, "100% · 100%")
+        self.indicator.set_label(self.label_text(), LABEL_GUIDE)
         self.rebuild_menu()
 
     def add_item(self, text: str, *, enabled: bool = False, handler=None) -> None:
@@ -820,6 +872,12 @@ class Indicator:
 
     def on_quit_clicked(self, *_args) -> None:
         self.persist()
+        if self.repush_id is not None:
+            self.GLib.source_remove(self.repush_id)
+            self.repush_id = None
+        if self.watcher_id is not None:
+            self.Gio.bus_unwatch_name(self.watcher_id)
+            self.watcher_id = None
         self.Gtk.main_quit()
 
 
